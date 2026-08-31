@@ -1,1 +1,37 @@
+# Environment & Secrets
 .env
+*.env
+
+# Audio Downloads & Temp Storage
+downloads/
+downloades/
+*.wav
+*.mp3
+*.mp4
+*.m4a
+
+# Chroma Vector Database
+vector_db/
+
+# Python Caches & Environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+
+# Testing & Log Caches
+.pytest_cache/
+*.log
+
+# RAG Evaluation History (runtime data — not for version control)
+core/evaluation/evaluation_history.json
+
+# OS & Build Metadata
+.DS_Store
+Thumbs.db
+*.egg-info/
+build/
+dist/
