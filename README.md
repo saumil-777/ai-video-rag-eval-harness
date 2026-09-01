@@ -10,6 +10,11 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
+## 🎥 Demo Video
+
+Watch the complete walkthrough of the AI Video Assistant, including YouTube ingestion, transcription, summarization, action-item extraction, and RAG-powered chat.
+
+▶️ [Watch the Demo Video](./Demo/Screen%20Recording%202026-09-01%20191123.mp4)
 
 ## 🚀 Live Demo
 
