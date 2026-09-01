@@ -50,6 +50,24 @@ def download_youtube_audio(url: str, max_retries: int = 3) -> str:
             "nopart": True,           # CRITICAL FOR WINDOWS: Avoid .part file rename WinError 32
             "overwrites": True,       # Safely overwrite existing files
             "updatetime": False,       # Do not attempt to modify file mtime after download
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["mweb", "android", "ios", "web"],
+                }
+            },
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            "nocheckcertificate": True,
+            "geo_bypass": True,
+            "socket_timeout": 30,
+            "retries": 3,
+            "fragment_retries": 3,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
