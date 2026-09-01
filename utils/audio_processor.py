@@ -187,57 +187,55 @@ def extract_youtube_video_id(url: str) -> str:
 def fetch_youtube_transcript(url: str) -> str:
     """
     Retrieves transcript/captions for a YouTube video via YouTube Transcript API
-    and yt-dlp caption metadata endpoints.
+    and yt-dlp caption metadata endpoints, prioritizing English (including YouTube's
+    native auto-translated English tracks) whenever available.
     """
     video_id = extract_youtube_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract a valid YouTube video ID from '{url}'.")
 
-    # Strategy 1: youtube_transcript_api
+    # Strategy 1: youtube_transcript_api (English direct / translation)
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         ytt = YouTubeTranscriptApi()
 
-        # 1a. Primary fetch
+        # 1a. Try English directly
         try:
-            snippets = ytt.fetch(video_id)
+            snippets = ytt.fetch(video_id, languages=["en", "en-US", "en-GB"])
             texts = [
                 getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
                 for item in snippets
             ]
             full_transcript = " ".join([t.replace("\n", " ") for t in texts if t]).strip()
             if full_transcript:
-                logger.info(f"Successfully retrieved YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi default fetch.")
+                logger.info(f"Successfully retrieved English YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi.")
                 return full_transcript
-        except Exception as ex_fetch:
-            logger.warning(f"YouTubeTranscriptApi default fetch failed for video ID '{video_id}': {ex_fetch}. Trying transcript list...")
+        except Exception as ex_en:
+            logger.warning(f"YouTubeTranscriptApi English fetch failed for video ID '{video_id}': {ex_en}. Trying transcript list & translation...")
 
-        # 1b. Transcript list search (for manual / auto-generated / alternate language captions)
+        # 1b. Transcript list search (for native translation or direct English tracks)
         try:
             t_list = ytt.list(video_id)
-            transcript_obj = None
-            try:
-                transcript_obj = t_list.find_transcript(['en', 'en-US', 'en-GB'])
-            except Exception:
-                for t in t_list:
-                    transcript_obj = t
-                    break
-            if transcript_obj:
-                snippets = transcript_obj.fetch()
-                texts = [
-                    getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
-                    for item in snippets
-                ]
-                full_transcript = " ".join([t.replace("\n", " ") for t in texts if t]).strip()
-                if full_transcript:
-                    logger.info(f"Successfully retrieved YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi list search.")
-                    return full_transcript
+            for t in t_list:
+                if getattr(t, "is_translatable", False):
+                    try:
+                        translated = t.translate("en").fetch()
+                        texts = [
+                            getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
+                            for item in translated
+                        ]
+                        full_transcript = " ".join([txt.replace("\n", " ") for txt in texts if txt]).strip()
+                        if full_transcript:
+                            logger.info(f"Successfully retrieved native English-translated YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi.")
+                            return full_transcript
+                    except Exception:
+                        pass
         except Exception as ex_list:
             logger.warning(f"YouTubeTranscriptApi list search failed for video ID '{video_id}': {ex_list}. Trying yt-dlp subtitle fallback...")
     except ImportError:
         logger.warning("youtube_transcript_api not installed. Trying yt-dlp subtitle metadata fallback...")
 
-    # Strategy 2: yt-dlp subtitle / caption extraction metadata
+    # Strategy 2: yt-dlp subtitle / caption extraction metadata (includes YouTube's auto-translated tracks like 'en')
     try:
         ydl_opts = {
             "skip_download": True,
@@ -249,45 +247,76 @@ def fetch_youtube_transcript(url: str) -> str:
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            subs = info.get("subtitles") or info.get("automatic_captions") or {}
-            lang_keys = [k for k in subs if k.startswith("en")] + list(subs.keys())
-            if lang_keys:
-                selected_lang = lang_keys[0]
-                formats = subs[selected_lang]
+            subs = info.get("subtitles") or {}
+            auto_subs = info.get("automatic_captions") or {}
+
+            # Prioritize 'en' tracks (manual or auto-translated)
+            en_keys = [k for k in subs if k.startswith("en")] + [k for k in auto_subs if k.startswith("en")]
+            all_keys = en_keys + [k for k in subs if k not in en_keys] + [k for k in auto_subs if k not in en_keys]
+
+            for key in all_keys:
+                formats = subs.get(key) or auto_subs.get(key) or []
                 for fmt in formats:
                     sub_url = fmt.get("url")
-                    if sub_url:
-                        import requests
-                        resp = requests.get(sub_url, timeout=15)
-                        if resp.ok:
-                            if fmt.get("ext") == "json3" or "json3" in sub_url:
-                                data = resp.json()
-                                events = data.get("events", [])
-                                lines = []
-                                for ev in events:
-                                    segs = ev.get("segs", [])
-                                    line = "".join([s.get("utf8", "") for s in segs]).strip()
-                                    if line:
-                                        lines.append(line)
-                                text = " ".join(lines).strip()
-                                if text:
-                                    logger.info(f"Successfully retrieved YouTube transcript ({len(text)} chars) via yt-dlp captions.")
-                                    return text
-                            elif resp.text.strip():
-                                clean_lines = [
-                                    re.sub(r"<[^>]+>", "", line).strip()
-                                    for line in resp.text.splitlines()
-                                    if line.strip() and not line.startswith("WEBVTT") and "-->" not in line and not line.isdigit()
-                                ]
-                                text = " ".join(clean_lines).strip()
-                                if text:
-                                    logger.info(f"Successfully retrieved YouTube transcript ({len(text)} chars) via yt-dlp subtitle URL.")
-                                    return text
+                    if not sub_url:
+                        continue
+                    import requests
+                    resp = requests.get(sub_url, timeout=15)
+                    if resp.ok and resp.text.strip():
+                        if fmt.get("ext") == "json3" or "json3" in sub_url:
+                            data = resp.json()
+                            events = data.get("events", [])
+                            lines = []
+                            for ev in events:
+                                segs = ev.get("segs", [])
+                                line = "".join([s.get("utf8", "") for s in segs]).strip()
+                                if line:
+                                    lines.append(line)
+                            text = " ".join(lines).strip()
+                            if text:
+                                logger.info(f"Successfully retrieved YouTube transcript ({len(text)} chars, lang='{key}') via yt-dlp captions.")
+                                return text
+                        elif "<text" in resp.text:
+                            raw_lines = re.findall(r"<text[^>]*>(.*?)</text>", resp.text, re.DOTALL)
+                            clean_lines = [
+                                re.sub(r"<[^>]+>", "", l).replace("&quot;", '"').replace("&amp;", "&").replace("&#39;", "'").strip()
+                                for l in raw_lines
+                            ]
+                            text = " ".join([l for l in clean_lines if l]).strip()
+                            if text:
+                                logger.info(f"Successfully retrieved YouTube transcript ({len(text)} chars, lang='{key}') via yt-dlp XML captions.")
+                                return text
+                        else:
+                            clean_lines = [
+                                re.sub(r"<[^>]+>", "", line).strip()
+                                for line in resp.text.splitlines()
+                                if line.strip() and not line.startswith("WEBVTT") and "-->" not in line and not line.isdigit()
+                            ]
+                            text = " ".join(clean_lines).strip()
+                            if text:
+                                logger.info(f"Successfully retrieved YouTube transcript ({len(text)} chars, lang='{key}') via yt-dlp subtitle URL.")
+                                return text
     except Exception as ex_ytdlp:
         logger.warning(f"yt-dlp subtitle metadata extraction failed for '{url}': {ex_ytdlp}")
 
+    # Strategy 3: Fallback to raw transcript in any language via youtube_transcript_api if no English track exists anywhere
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        ytt = YouTubeTranscriptApi()
+        snippets = ytt.fetch(video_id)
+        texts = [
+            getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
+            for item in snippets
+        ]
+        full_transcript = " ".join([t.replace("\n", " ") for t in texts if t]).strip()
+        if full_transcript:
+            logger.info(f"Retrieved raw fallback transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi.")
+            return full_transcript
+    except Exception:
+        pass
+
     raise RuntimeError(
-        f"No public closed captions or transcripts found for YouTube video '{url}'."
+        f"Unable to access this YouTube video. Please try another public YouTube video."
     )
 
 
