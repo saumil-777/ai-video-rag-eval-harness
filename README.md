@@ -13,7 +13,10 @@
 
 ## 🚀 Live Demo
 
-**GitHub Repository & Public Deployment:**
+**Live Application (Streamlit Community Cloud):**  
+[https://ai-video-rag-eval-harness-drtkntkzqzbjcpmgqbw5tu.streamlit.app/](https://ai-video-rag-eval-harness-drtkntkzqzbjcpmgqbw5tu.streamlit.app/)
+
+**GitHub Repository:**  
 [https://github.com/saumil-777/ai-video-rag-eval-harness](https://github.com/saumil-777/ai-video-rag-eval-harness)
 
 > **Deployment Note:** The application is deployed and running end-to-end on **Streamlit Community Cloud**. API credentials (`MISTRAL_API_KEY`, etc.) are pre-configured via Streamlit Cloud Secrets, allowing recruiters and reviewers to test the live application immediately without entering their own API keys.
