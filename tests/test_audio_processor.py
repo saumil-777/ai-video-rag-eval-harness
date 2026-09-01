@@ -168,8 +168,8 @@ class TestAudioProcessor(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             process_input("https://www.youtube.com/watch?v=mock_403_video")
 
-        self.assertIn("YouTube did not allow this video to be accessed", str(ctx.exception))
-        self.assertIn("upload the media file directly", str(ctx.exception))
+        self.assertIn("Unable to access this YouTube video", str(ctx.exception))
+        self.assertIn("try another public YouTube video", str(ctx.exception))
 
     @patch("utils.audio_processor.convert_to_wav")
     @patch("utils.audio_processor.chunk_audio")

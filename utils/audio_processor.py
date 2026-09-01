@@ -326,8 +326,7 @@ def process_input(source: str) -> tuple:
         except Exception as download_ex:
             logger.error(f"YouTube processing completely failed for '{source}': {download_ex}")
             raise RuntimeError(
-                "⚠️ YouTube did not allow this video to be accessed from the deployed environment. "
-                "Try a video with public captions or upload the media file directly."
+                "Unable to access this YouTube video. Please try another public YouTube video."
             ) from download_ex
     else:
         logger.info("Detected local file. Converting to WAV...")
