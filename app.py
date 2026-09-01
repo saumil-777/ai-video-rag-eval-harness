@@ -343,8 +343,26 @@ with st.sidebar:
     st.markdown('<div class="hero-sub">Meeting Intelligence</div>', unsafe_allow_html=True)
     st.markdown("---")
 
-    st.markdown('<span class="badge badge-purple">Input</span>', unsafe_allow_html=True)
-    source = st.text_input("YouTube URL or File Path", placeholder="https://youtube.com/watch?v=... or /path/to/file.mp4")
+    st.markdown('<span class="badge badge-purple">Input Source</span>', unsafe_allow_html=True)
+    input_mode = st.radio(
+        "Input Mode",
+        ["YouTube URL", "Upload Audio/Video File"],
+        index=0,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
+    source = ""
+    uploaded_file = None
+
+    if input_mode == "YouTube URL":
+        source = st.text_input("YouTube URL or File Path", placeholder="https://youtube.com/watch?v=...")
+    else:
+        uploaded_file = st.file_uploader(
+            "Upload audio/video file",
+            type=["mp4", "wav", "mp3", "m4a", "mkv", "flac", "ogg", "webm", "aac"],
+            help="Upload an audio or video file from your computer"
+        )
 
     language = st.selectbox("Language", ["english", "hinglish"], index=0)
 
@@ -382,13 +400,33 @@ logger = logging.getLogger(__name__)
 # ── Run Pipeline ────────────────────────────────────────────────────────────────
 if run_btn:
     load_dotenv(override=True)
+    temp_uploaded_path = None
+
+    if input_mode == "Upload Audio/Video File" and uploaded_file is not None:
+        from core.config import DOWNLOADS_DIR
+        os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+        temp_uploaded_path = os.path.join(DOWNLOADS_DIR, f"upload_{uuid.uuid4().hex[:8]}_{uploaded_file.name}")
+        with open(temp_uploaded_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        source = temp_uploaded_path
+
     is_valid_source, src_err = validate_source_input(source)
     is_valid_key, key_err = validate_api_keys(require_sarvam=(language.lower() == "hinglish"))
 
     if not is_valid_source:
         st.error(f"⚠️ {src_err}")
+        if temp_uploaded_path and os.path.exists(temp_uploaded_path):
+            try:
+                os.remove(temp_uploaded_path)
+            except Exception:
+                pass
     elif not is_valid_key:
         st.error(f"🔑 {key_err}")
+        if temp_uploaded_path and os.path.exists(temp_uploaded_path):
+            try:
+                os.remove(temp_uploaded_path)
+            except Exception:
+                pass
     else:
         st.session_state.pipeline_done = False
         st.session_state.result = None
@@ -485,6 +523,11 @@ if run_btn:
             st.error(f"❌ Processing failed: {err_str}")
         finally:
             cleanup_audio_files(chunks, main_wav_path)
+            if temp_uploaded_path and os.path.exists(temp_uploaded_path):
+                try:
+                    os.remove(temp_uploaded_path)
+                except Exception:
+                    pass
 
 # ── Main Tabs ───────────────────────────────────────────────────────────────────
 tab1, tab2 = st.tabs(["🎬 Main Assistant", "RAG Evaluation & Observability"])

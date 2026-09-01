@@ -129,34 +129,74 @@ class TestAudioProcessor(unittest.TestCase):
 
     @patch("utils.audio_processor.fetch_youtube_transcript")
     @patch("utils.audio_processor.download_youtube_audio")
-    def test_07_process_input_fallback_on_403(self, mock_download, mock_fetch_transcript):
-        """Verify process_input seamlessly falls back to transcript retrieval when audio download triggers HTTP 403."""
-        mock_download.side_effect = RuntimeError("Failed to download YouTube audio: HTTP Error 403: Forbidden")
-        mock_fetch_transcript.return_value = "Retrieved transcript content via fallback mechanism."
+    def test_07_process_input_preferred_caption_path(self, mock_download, mock_fetch_transcript):
+        """Verify process_input uses closed captions as the FIRST preferred path for YouTube URLs without attempting audio download."""
+        mock_fetch_transcript.return_value = "Primary transcript content fetched via closed captions."
 
-        chunks, main_wav_path, transcript_override = process_input("https://www.youtube.com/watch?v=mock_403_video")
+        chunks, main_wav_path, transcript_override = process_input("https://www.youtube.com/watch?v=mock_caption_video")
 
         self.assertEqual(chunks, [])
         self.assertIsNone(main_wav_path)
-        self.assertEqual(transcript_override, "Retrieved transcript content via fallback mechanism.")
-        mock_download.assert_called_once()
+        self.assertEqual(transcript_override, "Primary transcript content fetched via closed captions.")
         mock_fetch_transcript.assert_called_once()
+        mock_download.assert_not_called()
 
     @patch("utils.audio_processor.fetch_youtube_transcript")
     @patch("utils.audio_processor.download_youtube_audio")
-    def test_08_process_input_fails_gracefully_when_no_transcript(self, mock_download, mock_fetch_transcript):
-        """Verify process_input raises a clear, user-facing RuntimeError when both download and caption retrieval fail."""
+    @patch("utils.audio_processor.chunk_audio")
+    def test_08_process_input_fallback_to_audio_download(self, mock_chunk, mock_download, mock_fetch_transcript):
+        """Verify process_input falls back to audio download when closed captions are unavailable."""
+        mock_fetch_transcript.side_effect = RuntimeError("No closed captions found")
+        mock_download.return_value = "/path/to/downloaded.wav"
+        mock_chunk.return_value = ["/path/to/downloaded.wav_chunk_0.wav"]
+
+        chunks, main_wav_path, transcript_override = process_input("https://www.youtube.com/watch?v=mock_no_caption_video")
+
+        self.assertEqual(chunks, ["/path/to/downloaded.wav_chunk_0.wav"])
+        self.assertEqual(main_wav_path, "/path/to/downloaded.wav")
+        self.assertIsNone(transcript_override)
+        mock_fetch_transcript.assert_called_once()
+        mock_download.assert_called_once()
+
+    @patch("utils.audio_processor.fetch_youtube_transcript")
+    @patch("utils.audio_processor.download_youtube_audio")
+    def test_09_process_input_fails_gracefully_when_both_fail(self, mock_download, mock_fetch_transcript):
+        """Verify process_input raises a clean, user-facing RuntimeError when both caption retrieval and audio download fail (HTTP 403 scenario)."""
+        mock_fetch_transcript.side_effect = RuntimeError("No closed captions found")
         mock_download.side_effect = RuntimeError("HTTP Error 403: Forbidden")
-        mock_fetch_transcript.side_effect = RuntimeError("No closed captions found for this video")
 
         with self.assertRaises(RuntimeError) as ctx:
-            process_input("https://www.youtube.com/watch?v=mock_no_captions")
+            process_input("https://www.youtube.com/watch?v=mock_403_video")
 
-        self.assertIn("Failed to process YouTube video", str(ctx.exception))
-        self.assertIn("HTTP 403", str(ctx.exception))
+        self.assertIn("YouTube did not allow this video to be accessed", str(ctx.exception))
+        self.assertIn("upload the media file directly", str(ctx.exception))
+
+    @patch("utils.audio_processor.convert_to_wav")
+    @patch("utils.audio_processor.chunk_audio")
+    def test_10_process_input_local_file(self, mock_chunk, mock_convert):
+        """Verify process_input processes local uploaded media files directly without attempting YouTube API calls."""
+        # Create a dummy local wav file
+        dummy_local = os.path.join(DOWNLOADS_DIR, "dummy_local.mp4")
+        with open(dummy_local, "wb") as f:
+            f.write(b"dummy mp4 content")
+
+        try:
+            mock_convert.return_value = dummy_local + "_converted.wav"
+            mock_chunk.return_value = [dummy_local + "_converted.wav_chunk_0.wav"]
+
+            chunks, main_wav_path, transcript_override = process_input(dummy_local)
+
+            self.assertEqual(main_wav_path, dummy_local + "_converted.wav")
+            self.assertEqual(chunks, [dummy_local + "_converted.wav_chunk_0.wav"])
+            self.assertIsNone(transcript_override)
+            mock_convert.assert_called_once_with(dummy_local)
+        finally:
+            if os.path.exists(dummy_local):
+                try:
+                    os.remove(dummy_local)
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

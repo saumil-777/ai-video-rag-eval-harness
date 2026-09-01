@@ -187,8 +187,7 @@ def extract_youtube_video_id(url: str) -> str:
 def fetch_youtube_transcript(url: str) -> str:
     """
     Retrieves transcript/captions for a YouTube video via YouTube Transcript API
-    and yt-dlp caption metadata endpoints (which operate over lightweight HTTP APIs
-    permitted on cloud host IPs).
+    and yt-dlp caption metadata endpoints.
     """
     video_id = extract_youtube_video_id(url)
     if not video_id:
@@ -197,22 +196,46 @@ def fetch_youtube_transcript(url: str) -> str:
     # Strategy 1: youtube_transcript_api
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
+        ytt = YouTubeTranscriptApi()
+
+        # 1a. Primary fetch
         try:
-            ytt = YouTubeTranscriptApi()
             snippets = ytt.fetch(video_id)
-            texts = []
-            for item in snippets:
-                txt = getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
-                if txt:
-                    texts.append(txt.replace("\n", " "))
-            full_transcript = " ".join(texts).strip()
+            texts = [
+                getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
+                for item in snippets
+            ]
+            full_transcript = " ".join([t.replace("\n", " ") for t in texts if t]).strip()
             if full_transcript:
-                logger.info(f"Successfully retrieved YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi.")
+                logger.info(f"Successfully retrieved YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi default fetch.")
                 return full_transcript
-        except Exception as ex_api:
-            logger.warning(f"YouTubeTranscriptApi fetch failed for video ID '{video_id}': {ex_api}. Trying subtitle fallback...")
+        except Exception as ex_fetch:
+            logger.warning(f"YouTubeTranscriptApi default fetch failed for video ID '{video_id}': {ex_fetch}. Trying transcript list...")
+
+        # 1b. Transcript list search (for manual / auto-generated / alternate language captions)
+        try:
+            t_list = ytt.list(video_id)
+            transcript_obj = None
+            try:
+                transcript_obj = t_list.find_transcript(['en', 'en-US', 'en-GB'])
+            except Exception:
+                for t in t_list:
+                    transcript_obj = t
+                    break
+            if transcript_obj:
+                snippets = transcript_obj.fetch()
+                texts = [
+                    getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
+                    for item in snippets
+                ]
+                full_transcript = " ".join([t.replace("\n", " ") for t in texts if t]).strip()
+                if full_transcript:
+                    logger.info(f"Successfully retrieved YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi list search.")
+                    return full_transcript
+        except Exception as ex_list:
+            logger.warning(f"YouTubeTranscriptApi list search failed for video ID '{video_id}': {ex_list}. Trying yt-dlp subtitle fallback...")
     except ImportError:
-        logger.warning("youtube_transcript_api not installed. Trying yt-dlp subtitle fallback...")
+        logger.warning("youtube_transcript_api not installed. Trying yt-dlp subtitle metadata fallback...")
 
     # Strategy 2: yt-dlp subtitle / caption extraction metadata
     try:
@@ -264,15 +287,14 @@ def fetch_youtube_transcript(url: str) -> str:
         logger.warning(f"yt-dlp subtitle metadata extraction failed for '{url}': {ex_ytdlp}")
 
     raise RuntimeError(
-        f"Unable to download audio or retrieve closed captions for YouTube video '{url}'. "
-        "Direct media downloading is restricted on cloud host IPs (HTTP 403) and no public captions/transcripts "
-        "were found for this video. Please upload an audio/video file directly or try a YouTube video with closed captions."
+        f"No public closed captions or transcripts found for YouTube video '{url}'."
     )
 
 
 def process_input(source: str) -> tuple:
     """
     Process input audio source into WAV chunks or direct transcript override.
+    For YouTube URLs, tries closed captions FIRST before falling back to audio download.
     Returns tuple: (chunks: list, main_wav_path: str | None, transcript_override: str | None)
     """
     is_valid, err_msg = validate_source_input(source)
@@ -281,28 +303,32 @@ def process_input(source: str) -> tuple:
         raise ValueError(err_msg)
 
     if source.startswith("http://") or source.startswith("https://"):
-        logger.info("Detected YouTube URL. Attempting direct audio download...")
+        logger.info("Detected YouTube URL. Attempting closed-caption / transcript retrieval first...")
+        # PREFERRED PATH: Try closed captions / transcript retrieval first
+        try:
+            transcript_text = fetch_youtube_transcript(source)
+            if transcript_text and transcript_text.strip():
+                logger.info(f"Successfully retrieved YouTube transcript ({len(transcript_text)} chars). Skipping audio download.")
+                return [], None, transcript_text
+        except Exception as caption_ex:
+            logger.warning(
+                f"YouTube closed-caption retrieval failed for '{source}': {caption_ex}. "
+                f"Attempting direct audio download fallback..."
+            )
+
+        # FALLBACK PATH: Direct media audio download (if no public captions exist)
         try:
             wav_path = download_youtube_audio(source)
             logger.info("Chunking audio...")
             chunks = chunk_audio(wav_path)
             logger.info(f"Audio processing ready — {len(chunks)} chunk(s) created.")
             return chunks, wav_path, None
-        except Exception as ex:
-            logger.warning(
-                f"Direct YouTube audio download failed for '{source}': {ex}. "
-                f"Attempting cloud-compatible YouTube caption/transcript retrieval..."
-            )
-            try:
-                transcript_text = fetch_youtube_transcript(source)
-                return [], None, transcript_text
-            except Exception as transcript_ex:
-                logger.error(f"YouTube processing completely failed for '{source}': {transcript_ex}")
-                raise RuntimeError(
-                    f"Failed to process YouTube video: direct media downloading is restricted (HTTP 403) "
-                    f"and caption retrieval failed ({transcript_ex}). "
-                    f"Please upload an audio/video file directly or try a YouTube video with closed captions."
-                ) from transcript_ex
+        except Exception as download_ex:
+            logger.error(f"YouTube processing completely failed for '{source}': {download_ex}")
+            raise RuntimeError(
+                "⚠️ YouTube did not allow this video to be accessed from the deployed environment. "
+                "Try a video with public captions or upload the media file directly."
+            ) from download_ex
     else:
         logger.info("Detected local file. Converting to WAV...")
         wav_path = convert_to_wav(source)
