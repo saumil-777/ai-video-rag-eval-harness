@@ -16,6 +16,23 @@ Watch the complete walkthrough of the AI Video Assistant, including YouTube inge
 
 ▶️ [Watch the Demo Video](./Demo/Screen%20Recording%202026-09-01%20191123.mp4)
 
+## 📸 Application Screenshots
+
+### 1. Main Assistant — Meeting Summary & Transcript
+![Main Assistant Summary](./Demo/Screenshot%202026-09-01%20195753.png)
+
+### 2. Interactive RAG Chat & Report Export
+![RAG Chat & Export](./Demo/Screenshot%202026-09-01%20195812.png)
+
+### 3. RAG Quality Evaluation & Observability Dashboard
+![RAG Quality Evaluation Metrics](./Demo/Screenshot%202026-09-01%20195826.png)
+
+### 4. Per-Question Metric Breakdown & Context Inspection
+![Per-Question Breakdown](./Demo/Screenshot%202026-09-01%20195839.png)
+
+### 5. Persistent Evaluation History & Regression Tracking
+![Evaluation Run History](./Demo/Screenshot%202026-09-01%20195848.png)
+
 ## 🚀 Live Demo
 
 **Live Application (Streamlit Community Cloud):**  
