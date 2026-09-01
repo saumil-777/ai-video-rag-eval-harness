@@ -10,9 +10,10 @@ except ImportError:
 
 from utils.audio_processor import process_input
 from core.transcriber import transcribe_all
-from core.summarizer import summarize, generate_title
-from core.extractor import extract_action_items, extract_key_decisions, extract_questions
+from core.summarizer import summarize, generate_title, _extractive_summary_fallback, _fallback_title
+from core.extractor import extract_action_items, extract_key_decisions, extract_questions, _fallback
 from core.rag_engine import build_rag_chain, ask_question
+from core.retry import MistralRateLimitError
 
 
 
@@ -397,6 +398,7 @@ if run_btn:
         session_id = f"session_{uuid.uuid4().hex[:16]}"
         chunks = []
         main_wav_path = None
+        transcript = None  # initialised here so fallback handler can reference it
 
         try:
             with st.status("🚀 Processing Pipeline...", expanded=True) as status:
@@ -440,8 +442,47 @@ if run_btn:
             time.sleep(0.5)
             st.rerun()
 
+        except MistralRateLimitError:
+            # Rate limit hit mid-pipeline — use extractive fallbacks so the
+            # recruiter still sees useful results, clearly labelled as fallback.
+            logger.warning("Pipeline hit Mistral rate limit — activating demo fallback.")
+            st.warning(
+                "⚡ The AI service is temporarily busy (rate limit reached). "
+                "Showing demo/fallback results below. Please try again in a moment "
+                "for full AI-generated output."
+            )
+            # Use extractive fallbacks only if transcript was already fetched
+            if transcript:
+                fallback_summary = _extractive_summary_fallback(transcript)
+                fallback_title = _fallback_title(transcript)
+                fallback_actions = _fallback("Action item")
+                fallback_decisions = _fallback("Key decision")
+                fallback_questions = _fallback("Open question")
+                rag_chain_fallback = build_rag_chain(transcript, collection_name=session_id)
+                st.session_state.result = {
+                    "session_id": session_id,
+                    "title": fallback_title,
+                    "transcript": transcript,
+                    "summary": fallback_summary,
+                    "action_items": fallback_actions,
+                    "key_decisions": fallback_decisions,
+                    "open_questions": fallback_questions,
+                    "rag_chain": rag_chain_fallback,
+                }
+                st.session_state.pipeline_done = True
+                st.rerun()
         except Exception as e:
-            st.error(f"❌ Error during processing: {e}")
+            # Sanitise the error message — strip raw API URLs and JSON payloads
+            # so users never see internal implementation details.
+            err_str = str(e)
+            # Truncate extremely long errors (e.g. full HTTP response bodies)
+            if len(err_str) > 200:
+                err_str = err_str[:200] + "…"
+            # Remove anything that looks like a URL
+            import re as _re
+            err_str = _re.sub(r'https?://\S+', '[API endpoint]', err_str)
+            logger.error("Pipeline error: %s", e, exc_info=True)
+            st.error(f"❌ Processing failed: {err_str}")
         finally:
             cleanup_audio_files(chunks, main_wav_path)
 
@@ -722,8 +763,16 @@ with tab2:
                     st.success(
                         f"✅ Ragas {mode_label} Evaluation Complete! Run ID: `{latest_run['run_id']}`"
                     )
+                except MistralRateLimitError:
+                    st.warning(
+                        "⚡ Evaluation temporarily unavailable — the AI service is rate-limited. "
+                        "Please wait a moment and try again."
+                    )
                 except Exception as ex:
-                    st.error(f"❌ Evaluation Error: {ex}")
+                    # Sanitise: never show raw API URLs or payloads in the UI
+                    err_type = type(ex).__name__
+                    st.error(f"❌ Evaluation failed ({err_type}). Please try again in a moment.")
+                    logger.error("Evaluation error: %s", ex, exc_info=True)
 
     # ── Results ───────────────────────────────────────────────────────────────
     history_runs = load_evaluation_history()

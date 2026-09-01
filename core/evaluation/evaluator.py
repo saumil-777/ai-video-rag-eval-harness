@@ -8,6 +8,7 @@ import logging
 import numpy as np
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from core.retry import is_rate_limit_error, MistralRateLimitError
 
 # 1. Compatibility Shim for LangChain 0.4 / Ragas VertexAI import boundary
 try:
@@ -228,12 +229,12 @@ def run_ragas_evaluation(
                 rag_res = ask_question_with_context(rag_chain, q_text)
                 break
             except Exception as ex:
-                if "429" in str(ex) or "rate_limited" in str(ex):
+                if is_rate_limit_error(ex):
                     logger.warning(f"Rate limit hit on question {idx+1}. Retrying in 3s... ({ex})")
                     time.sleep(3.0)
                 else:
                     logger.error(f"Error on question {idx+1}: {ex}")
-                    rag_res = {"answer": f"Error: {ex}", "contexts": []}
+                    rag_res = {"answer": f"Error processing question.", "contexts": []}
                     break
 
         if not rag_res:
@@ -293,10 +294,10 @@ def run_ragas_evaluation(
             break
         except Exception as ex:
             last_ragas_error = ex
-            if "429" in str(ex) or "rate_limited" in str(ex):
+            if is_rate_limit_error(ex):
                 logger.warning(
                     f"Rate limit during Ragas evaluate(). Sleeping 5s before retry "
-                    f"(attempt {attempt+1}/3): {ex}"
+                    f"(attempt {attempt+1}/3)."
                 )
                 time.sleep(5.0)
             else:
@@ -308,10 +309,12 @@ def run_ragas_evaluation(
                 break
 
     if last_ragas_error is not None and results is None:
+        if is_rate_limit_error(last_ragas_error):
+            raise MistralRateLimitError(attempts=3) from last_ragas_error
         raise RuntimeError(
             f"Ragas evaluation failed after retries. "
-            f"Last error: {type(last_ragas_error).__name__}: {last_ragas_error}"
-        )
+            f"Last error: {type(last_ragas_error).__name__}"
+        ) from last_ragas_error
 
     # Log what Ragas returned so we can verify scores are real
     if results is not None:
