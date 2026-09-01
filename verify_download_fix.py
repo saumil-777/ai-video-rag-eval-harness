@@ -33,7 +33,7 @@ def run_download_tests():
 
     # ── Test 1: Real YouTube Audio Download ──────────────────────────────────
     print("\n[1/4] Testing real YouTube audio download...")
-    chunks, main_wav_path = process_input(TEST_URL)
+    chunks, main_wav_path, _ = process_input(TEST_URL)
 
     assert os.path.exists(main_wav_path), f"FAIL: Main WAV file missing at {main_wav_path}"
     assert len(chunks) > 0, "FAIL: Chunks list is empty"

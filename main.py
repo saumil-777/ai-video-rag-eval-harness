@@ -31,9 +31,13 @@ def run_pipeline(source: str, language: str = "english") -> dict:
     main_wav_path = None
 
     try:
-        chunks, main_wav_path = process_input(source)
+        chunks, main_wav_path, transcript_override = process_input(source)
 
-        transcript = transcribe_all(chunks, language)
+        if transcript_override:
+            logger.info("Using fetched YouTube closed captions/transcript...")
+            transcript = transcript_override
+        else:
+            transcript = transcribe_all(chunks, language)
         print(f"Raw transcription (first 300 characters): {transcript[:300]}")
 
         title = generate_title(transcript)

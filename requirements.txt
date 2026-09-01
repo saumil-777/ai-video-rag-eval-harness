@@ -28,3 +28,4 @@ datasets>=3.0.0
 appdirs>=1.4.4
 diskcache>=5.6.3
 instructor>=1.16.0
+youtube-transcript-api>=0.6.2

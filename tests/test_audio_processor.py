@@ -3,7 +3,15 @@ import unittest
 import uuid
 from pydub import AudioSegment
 from unittest.mock import patch, MagicMock
-from utils.audio_processor import chunk_audio, cleanup_audio_files, download_youtube_audio, DOWNLOADS_DIR
+from utils.audio_processor import (
+    chunk_audio,
+    cleanup_audio_files,
+    download_youtube_audio,
+    extract_youtube_video_id,
+    fetch_youtube_transcript,
+    process_input,
+    DOWNLOADS_DIR,
+)
 
 
 class TestAudioProcessor(unittest.TestCase):
@@ -95,7 +103,60 @@ class TestAudioProcessor(unittest.TestCase):
         self.assertIn("Failed to download YouTube audio after 2 attempt(s)", str(ctx.exception))
         self.assertEqual(mock_ydl.extract_info.call_count, 2)
 
+    def test_05_extract_youtube_video_id(self):
+        """Verify extract_youtube_video_id parses 11-char video IDs from various URL formats."""
+        self.assertEqual(extract_youtube_video_id("https://www.youtube.com/watch?v=jNQXAC9IVRw"), "jNQXAC9IVRw")
+        self.assertEqual(extract_youtube_video_id("https://youtu.be/jNQXAC9IVRw"), "jNQXAC9IVRw")
+        self.assertEqual(extract_youtube_video_id("https://www.youtube.com/embed/jNQXAC9IVRw"), "jNQXAC9IVRw")
+        self.assertEqual(extract_youtube_video_id("jNQXAC9IVRw"), "jNQXAC9IVRw")
+        self.assertEqual(extract_youtube_video_id("invalid_string"), "")
+
+    @patch("youtube_transcript_api.YouTubeTranscriptApi")
+    def test_06_fetch_youtube_transcript_api(self, mock_ytt_cls):
+        """Verify fetch_youtube_transcript returns transcript text using YouTubeTranscriptApi."""
+        mock_ytt_inst = MagicMock()
+        mock_ytt_cls.return_value = mock_ytt_inst
+
+        mock_snippet_1 = MagicMock()
+        mock_snippet_1.text = "Hello world"
+        mock_snippet_2 = MagicMock()
+        mock_snippet_2.text = "this is a test transcript"
+
+        mock_ytt_inst.fetch.return_value = [mock_snippet_1, mock_snippet_2]
+
+        transcript = fetch_youtube_transcript("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+        self.assertIn("Hello world this is a test transcript", transcript)
+
+    @patch("utils.audio_processor.fetch_youtube_transcript")
+    @patch("utils.audio_processor.download_youtube_audio")
+    def test_07_process_input_fallback_on_403(self, mock_download, mock_fetch_transcript):
+        """Verify process_input seamlessly falls back to transcript retrieval when audio download triggers HTTP 403."""
+        mock_download.side_effect = RuntimeError("Failed to download YouTube audio: HTTP Error 403: Forbidden")
+        mock_fetch_transcript.return_value = "Retrieved transcript content via fallback mechanism."
+
+        chunks, main_wav_path, transcript_override = process_input("https://www.youtube.com/watch?v=mock_403_video")
+
+        self.assertEqual(chunks, [])
+        self.assertIsNone(main_wav_path)
+        self.assertEqual(transcript_override, "Retrieved transcript content via fallback mechanism.")
+        mock_download.assert_called_once()
+        mock_fetch_transcript.assert_called_once()
+
+    @patch("utils.audio_processor.fetch_youtube_transcript")
+    @patch("utils.audio_processor.download_youtube_audio")
+    def test_08_process_input_fails_gracefully_when_no_transcript(self, mock_download, mock_fetch_transcript):
+        """Verify process_input raises a clear, user-facing RuntimeError when both download and caption retrieval fail."""
+        mock_download.side_effect = RuntimeError("HTTP Error 403: Forbidden")
+        mock_fetch_transcript.side_effect = RuntimeError("No closed captions found for this video")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            process_input("https://www.youtube.com/watch?v=mock_no_captions")
+
+        self.assertIn("Failed to process YouTube video", str(ctx.exception))
+        self.assertIn("HTTP 403", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

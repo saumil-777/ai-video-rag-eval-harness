@@ -163,10 +163,117 @@ def cleanup_audio_files(file_paths: list = None, main_wav_path: str = None):
     _cleanup_stale_part_files(DOWNLOADS_DIR)
 
 
+import re
+
+def extract_youtube_video_id(url: str) -> str:
+    """Extract 11-character YouTube video ID from various URL formats."""
+    if not url:
+        return ""
+    url = url.strip()
+    if len(url) == 11 and re.match(r"^[a-zA-Z0-9_-]{11}$", url):
+        return url
+    patterns = [
+        r"(?:v=|\/)([a-zA-Z0-9_-]{11})(?:[&?\/].*)?$",
+        r"youtu\.be\/([a-zA-Z0-9_-]{11})",
+        r"embed\/([a-zA-Z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def fetch_youtube_transcript(url: str) -> str:
+    """
+    Retrieves transcript/captions for a YouTube video via YouTube Transcript API
+    and yt-dlp caption metadata endpoints (which operate over lightweight HTTP APIs
+    permitted on cloud host IPs).
+    """
+    video_id = extract_youtube_video_id(url)
+    if not video_id:
+        raise ValueError(f"Could not extract a valid YouTube video ID from '{url}'.")
+
+    # Strategy 1: youtube_transcript_api
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        try:
+            ytt = YouTubeTranscriptApi()
+            snippets = ytt.fetch(video_id)
+            texts = []
+            for item in snippets:
+                txt = getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else "")
+                if txt:
+                    texts.append(txt.replace("\n", " "))
+            full_transcript = " ".join(texts).strip()
+            if full_transcript:
+                logger.info(f"Successfully retrieved YouTube transcript ({len(full_transcript)} chars) via YouTubeTranscriptApi.")
+                return full_transcript
+        except Exception as ex_api:
+            logger.warning(f"YouTubeTranscriptApi fetch failed for video ID '{video_id}': {ex_api}. Trying subtitle fallback...")
+    except ImportError:
+        logger.warning("youtube_transcript_api not installed. Trying yt-dlp subtitle fallback...")
+
+    # Strategy 2: yt-dlp subtitle / caption extraction metadata
+    try:
+        ydl_opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitlesformat": "json3/vtt/srt",
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            subs = info.get("subtitles") or info.get("automatic_captions") or {}
+            lang_keys = [k for k in subs if k.startswith("en")] + list(subs.keys())
+            if lang_keys:
+                selected_lang = lang_keys[0]
+                formats = subs[selected_lang]
+                for fmt in formats:
+                    sub_url = fmt.get("url")
+                    if sub_url:
+                        import requests
+                        resp = requests.get(sub_url, timeout=15)
+                        if resp.ok:
+                            if fmt.get("ext") == "json3" or "json3" in sub_url:
+                                data = resp.json()
+                                events = data.get("events", [])
+                                lines = []
+                                for ev in events:
+                                    segs = ev.get("segs", [])
+                                    line = "".join([s.get("utf8", "") for s in segs]).strip()
+                                    if line:
+                                        lines.append(line)
+                                text = " ".join(lines).strip()
+                                if text:
+                                    logger.info(f"Successfully retrieved YouTube transcript ({len(text)} chars) via yt-dlp captions.")
+                                    return text
+                            elif resp.text.strip():
+                                clean_lines = [
+                                    re.sub(r"<[^>]+>", "", line).strip()
+                                    for line in resp.text.splitlines()
+                                    if line.strip() and not line.startswith("WEBVTT") and "-->" not in line and not line.isdigit()
+                                ]
+                                text = " ".join(clean_lines).strip()
+                                if text:
+                                    logger.info(f"Successfully retrieved YouTube transcript ({len(text)} chars) via yt-dlp subtitle URL.")
+                                    return text
+    except Exception as ex_ytdlp:
+        logger.warning(f"yt-dlp subtitle metadata extraction failed for '{url}': {ex_ytdlp}")
+
+    raise RuntimeError(
+        f"Unable to download audio or retrieve closed captions for YouTube video '{url}'. "
+        "Direct media downloading is restricted on cloud host IPs (HTTP 403) and no public captions/transcripts "
+        "were found for this video. Please upload an audio/video file directly or try a YouTube video with closed captions."
+    )
+
+
 def process_input(source: str) -> tuple:
     """
-    Process input audio source into WAV chunks.
-    Returns tuple: (chunks: list, main_wav_path: str)
+    Process input audio source into WAV chunks or direct transcript override.
+    Returns tuple: (chunks: list, main_wav_path: str | None, transcript_override: str | None)
     """
     is_valid, err_msg = validate_source_input(source)
     if not is_valid:
@@ -174,13 +281,32 @@ def process_input(source: str) -> tuple:
         raise ValueError(err_msg)
 
     if source.startswith("http://") or source.startswith("https://"):
-        logger.info("Detected YouTube URL. Downloading audio...")
-        wav_path = download_youtube_audio(source)
+        logger.info("Detected YouTube URL. Attempting direct audio download...")
+        try:
+            wav_path = download_youtube_audio(source)
+            logger.info("Chunking audio...")
+            chunks = chunk_audio(wav_path)
+            logger.info(f"Audio processing ready — {len(chunks)} chunk(s) created.")
+            return chunks, wav_path, None
+        except Exception as ex:
+            logger.warning(
+                f"Direct YouTube audio download failed for '{source}': {ex}. "
+                f"Attempting cloud-compatible YouTube caption/transcript retrieval..."
+            )
+            try:
+                transcript_text = fetch_youtube_transcript(source)
+                return [], None, transcript_text
+            except Exception as transcript_ex:
+                logger.error(f"YouTube processing completely failed for '{source}': {transcript_ex}")
+                raise RuntimeError(
+                    f"Failed to process YouTube video: direct media downloading is restricted (HTTP 403) "
+                    f"and caption retrieval failed ({transcript_ex}). "
+                    f"Please upload an audio/video file directly or try a YouTube video with closed captions."
+                ) from transcript_ex
     else:
         logger.info("Detected local file. Converting to WAV...")
         wav_path = convert_to_wav(source)
-
-    logger.info("Chunking audio...")
-    chunks = chunk_audio(wav_path)
-    logger.info(f"Audio processing ready — {len(chunks)} chunk(s) created.")
-    return chunks, wav_path
+        logger.info("Chunking audio...")
+        chunks = chunk_audio(wav_path)
+        logger.info(f"Audio processing ready — {len(chunks)} chunk(s) created.")
+        return chunks, wav_path, None

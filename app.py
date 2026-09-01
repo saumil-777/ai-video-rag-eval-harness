@@ -400,11 +400,15 @@ if run_btn:
 
         try:
             with st.status("🚀 Processing Pipeline...", expanded=True) as status:
-                status.write("🔊 Downloading and converting audio...")
-                chunks, main_wav_path = process_input(source)
+                status.write("🔊 Processing input source...")
+                chunks, main_wav_path, transcript_override = process_input(source)
 
-                status.write(f"📝 Transcribing audio ({len(chunks)} chunk(s)) with Whisper...")
-                transcript = transcribe_all(chunks, language)
+                if transcript_override:
+                    status.write("📝 Using fetched YouTube closed captions/transcript...")
+                    transcript = transcript_override
+                else:
+                    status.write(f"📝 Transcribing audio ({len(chunks)} chunk(s)) with Whisper...")
+                    transcript = transcribe_all(chunks, language)
 
                 status.write("🏷️ Generating meeting title...")
                 title = generate_title(transcript)
