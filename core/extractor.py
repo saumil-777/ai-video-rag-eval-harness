@@ -32,18 +32,19 @@ def build_chain(system_prompt: str):
 
 def _fallback(label: str) -> str:
     """
-    Return a clearly-labelled fallback when the LLM is unavailable.
+    Return a clearly-labelled fallback when the LLM is unavailable for extraction.
     Never pretends that an AI result was generated.
     """
     return (
         f"**⚠️ Demo/Fallback — {label} extraction temporarily unavailable.**\n\n"
-        "The AI service is rate-limited. Please try again in a moment, "
-        "or scroll to the Full Transcript to review the content directly."
+        "The AI service is temporarily busy (rate limit or high load). "
+        "Transcript, summary, and RAG chat remain fully available. "
+        "Please try again in a moment or review the Full Transcript directly."
     )
 
 
 # ---------------------------------------------------------------------------
-# Public extraction functions
+# Public extraction functions (Fault-tolerant optional enrichment)
 # ---------------------------------------------------------------------------
 
 def extract_action_items(transcript: str) -> str:
@@ -57,9 +58,9 @@ def extract_action_items(transcript: str) -> str:
     )
     try:
         return call_with_retry(chain.invoke, transcript)
-    except MistralRateLimitError:
-        logger.warning("Action item extraction failed due to rate limit.")
-        raise
+    except Exception as ex:
+        logger.warning(f"Action item extraction failed ({ex}) — using fallback so pipeline can continue.")
+        return _fallback("Action item")
 
 
 def extract_key_decisions(transcript: str) -> str:
@@ -70,9 +71,9 @@ def extract_key_decisions(transcript: str) -> str:
     )
     try:
         return call_with_retry(chain.invoke, transcript)
-    except MistralRateLimitError:
-        logger.warning("Key decision extraction failed due to rate limit.")
-        raise
+    except Exception as ex:
+        logger.warning(f"Key decision extraction failed ({ex}) — using fallback so pipeline can continue.")
+        return _fallback("Key decision")
 
 
 def extract_questions(transcript: str) -> str:
@@ -83,6 +84,6 @@ def extract_questions(transcript: str) -> str:
     )
     try:
         return call_with_retry(chain.invoke, transcript)
-    except MistralRateLimitError:
-        logger.warning("Question extraction failed due to rate limit.")
-        raise
+    except Exception as ex:
+        logger.warning(f"Question extraction failed ({ex}) — using fallback so pipeline can continue.")
+        return _fallback("Open question")

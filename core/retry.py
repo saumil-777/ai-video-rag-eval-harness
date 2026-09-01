@@ -3,7 +3,9 @@ core/retry.py
 =============
 Centralized retry utility for Mistral API calls.
 
-Handles HTTP 429 / rate-limit responses with bounded exponential backoff.
+Handles HTTP 429 (rate limit) and HTTP 503 / 502 / 504 (service availability / high load)
+responses with bounded exponential backoff.
+
 Raises MistralRateLimitError (a clean, user-safe exception) when all
 retries are exhausted so callers can display a friendly message without
 exposing raw API URLs or error payloads.
@@ -20,21 +22,25 @@ logger = logging.getLogger(__name__)
 
 class MistralRateLimitError(Exception):
     """
-    Raised when the Mistral API is rate-limited and all retry attempts
-    are exhausted.
+    Raised when the Mistral API is rate-limited or temporarily unavailable (503/429)
+    and all retry attempts are exhausted.
 
     The message is intentionally vague – safe to display in the UI.
     It never contains raw API URLs, response bodies, or credentials.
     """
 
     USER_MESSAGE = (
-        "⚡ The AI service is temporarily busy (rate limit reached). "
+        "⚡ The AI service is temporarily busy (rate limit or high load). "
         "Please wait a moment and try again."
     )
 
     def __init__(self, attempts: int = 3):
         super().__init__(self.USER_MESSAGE)
         self.attempts = attempts
+
+
+# Semantic alias
+MistralServiceUnavailableError = MistralRateLimitError
 
 
 # ---------------------------------------------------------------------------
@@ -44,13 +50,18 @@ class MistralRateLimitError(Exception):
 def is_rate_limit_error(exc: BaseException) -> bool:
     """
     Return True if *exc* (or any chained cause) looks like a Mistral
-    HTTP 429 / rate-limit error.
+    HTTP 429 rate limit or HTTP 503/502/504 service availability error.
 
     Checks the string representation of the exception chain rather than
     importing Mistral/httpx internals, which keeps this compatible with
     any langchain-mistralai version.
     """
-    indicators = ("429", "rate_limit", "rate limit", "1300", "RateLimitError")
+    indicators = (
+        "429", "503", "502", "504",
+        "rate_limit", "rate limit", "1300", "RateLimitError",
+        "service unavailable", "service_unavailable", "high load",
+        "temporarily unavailable", "overloaded", "bad gateway", "gateway timeout"
+    )
 
     # Walk the exception chain (cause + context)
     current: BaseException | None = exc
@@ -63,13 +74,17 @@ def is_rate_limit_error(exc: BaseException) -> bool:
     return False
 
 
+# Semantic alias
+is_transient_error = is_rate_limit_error
+
+
 # ---------------------------------------------------------------------------
 # Retry wrapper
 # ---------------------------------------------------------------------------
 
 def call_with_retry(fn, *args, max_retries: int = 3, base_delay: float = 2.0, **kwargs):
     """
-    Call *fn(*args, **kwargs)* with bounded exponential backoff on 429s.
+    Call *fn(*args, **kwargs)* with bounded exponential backoff on 429 / 503 errors.
 
     Parameters
     ----------
@@ -85,8 +100,8 @@ def call_with_retry(fn, *args, max_retries: int = 3, base_delay: float = 2.0, **
 
     Raises
     ------
-    MistralRateLimitError   if the rate limit persists after all retries.
-    <original exception>    for any non-rate-limit error (raised immediately,
+    MistralRateLimitError   if the rate limit / service error persists after all retries.
+    <original exception>    for any non-transient error (raised immediately,
                             no retry wasted).
     """
     last_exc: BaseException | None = None
@@ -101,20 +116,19 @@ def call_with_retry(fn, *args, max_retries: int = 3, base_delay: float = 2.0, **
                 if attempt < max_retries:
                     delay = base_delay * (2 ** (attempt - 1))  # 2, 4, 8 …
                     logger.warning(
-                        "Mistral rate limit hit (attempt %d/%d). "
+                        "Mistral API transient error (429/503) hit (attempt %d/%d): %s. "
                         "Retrying in %.0fs…",
-                        attempt, max_retries, delay,
+                        attempt, max_retries, exc, delay,
                     )
                     time.sleep(delay)
                 else:
                     logger.error(
-                        "Mistral rate limit persists after %d attempts. "
-                        "Giving up.",
+                        "Mistral API transient error persists after %d attempts. Giving up.",
                         max_retries,
                     )
             else:
-                # Not a rate-limit error — re-raise immediately, no retry.
+                # Not a transient rate/service error — re-raise immediately, no retry.
                 raise
 
-    # All retries exhausted on rate-limit errors
+    # All retries exhausted on rate-limit / 503 errors
     raise MistralRateLimitError(attempts=max_retries) from last_exc
